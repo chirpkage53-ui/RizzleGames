@@ -123,15 +123,18 @@ def get_main_menu(chat_id):
     return markup
 
 # ==========================================
-# ADMIN PANEL LOGIC
+# SUPER ADMIN PANEL LOGIC
 # ==========================================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.chat.id != ADMIN_ID: return
+    
     markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("✅ Pending Deposits", callback_data="admin_deposits"))
-    markup.row(InlineKeyboardButton("📈 View All Users", callback_data="admin_users"))
-    bot.reply_to(message, "👑 <b>ADMIN PANEL</b>", reply_markup=markup)
+    markup.row(InlineKeyboardButton("📥 Pending Deposits", callback_data="admin_deposits"))
+    markup.row(InlineKeyboardButton("📤 Pending Withdrawals", callback_data="admin_withdrawals"))
+    markup.row(InlineKeyboardButton("👥 View All Users", callback_data="admin_users"))
+    markup.row(InlineKeyboardButton("💰 Edit User Balance", callback_data="admin_edit_bal"))
+    bot.reply_to(message, "👑 <b>SUPER ADMIN PANEL</b>", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_actions(call):
@@ -141,37 +144,123 @@ def admin_actions(call):
     if call.data == "admin_users":
         c.execute("SELECT chat_id, main_balance, bonus_balance FROM users")
         users = c.fetchall()
+        # Slices to 4000 chars to avoid hitting Telegram's message length limit
         msg = "📈 <b>User Balances:</b>\n" + "\n".join([f"ID: <code>{u[0]}</code> | Main: ₹{u[1]} | Bonus: ₹{u[2]}" for u in users])
-        bot.send_message(call.message.chat.id, msg)
+        bot.send_message(call.message.chat.id, msg[:4000])
     
     elif call.data == "admin_deposits":
-        c.execute("SELECT id, chat_id, amount FROM transactions WHERE status = 'PENDING'")
+        c.execute("SELECT id, chat_id, amount FROM transactions WHERE type = 'DEPOSIT' AND status = 'PENDING'")
         pending = c.fetchall()
         if not pending:
             bot.send_message(call.message.chat.id, "✅ No pending deposits.")
         else:
             for p in pending:
                 markup = InlineKeyboardMarkup()
-                markup.row(InlineKeyboardButton("✅ Approve", callback_data=f"approve_{p[0]}_{p[1]}_{p[2]}"))
-                bot.send_message(call.message.chat.id, f"📥 <b>Pending:</b>\nID: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+                markup.row(
+                    InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_dep_{p[0]}_{p[1]}_{p[2]}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_dep_{p[0]}_{p[1]}_{p[2]}")
+                )
+                bot.send_message(call.message.chat.id, f"📥 <b>Deposit Request:</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+
+    elif call.data == "admin_withdrawals":
+        c.execute("SELECT id, chat_id, amount FROM transactions WHERE type = 'WITHDRAWAL' AND status = 'PENDING'")
+        pending = c.fetchall()
+        if not pending:
+            bot.send_message(call.message.chat.id, "✅ No pending withdrawals.")
+        else:
+            for p in pending:
+                markup = InlineKeyboardMarkup()
+                markup.row(
+                    InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_wit_{p[0]}_{p[1]}_{p[2]}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_wit_{p[0]}_{p[1]}_{p[2]}")
+                )
+                bot.send_message(call.message.chat.id, f"📤 <b>Withdrawal Request:</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+
+    elif call.data == "admin_edit_bal":
+        msg = bot.send_message(call.message.chat.id, "✏️ <b>Enter the User's Chat ID to edit:</b>")
+        bot.register_next_step_handler(msg, admin_process_edit_id)
+        
     conn.close()
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("approve_"))
-def approve_deposit(call):
-    _, tx_id, user_chat_id, amount = call.data.split("_")
-    user_chat_id, amount = int(user_chat_id), int(amount)
-    user = get_user(user_chat_id)
-    if user:
-        update_user(user_chat_id, main_balance=user['main_balance'] + amount)
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = %s", (tx_id,))
-        conn.commit()
-        conn.close()
-        
-        bot.edit_message_text(f"✅ Approved ₹{amount} for user {user_chat_id}", call.message.chat.id, call.message.message_id)
-        bot.send_message(user_chat_id, f"🎉 <b>DEPOSIT APPROVED!</b>\n₹{amount} has been added to your Main Wallet.")
+# --- BALANCE EDITOR FLOW ---
+def admin_process_edit_id(message):
+    if message.chat.id != ADMIN_ID: return
+    try:
+        target_id = int(message.text.strip())
+        user = get_user(target_id)
+        if not user:
+            bot.reply_to(message, "❌ User not found in database.")
+            return
+        msg = bot.reply_to(message, f"👤 User: <code>{target_id}</code>\n💰 Current Main Balance: <b>₹{user['main_balance']}</b>\n\n✏️ Enter the <b>NEW Main Balance</b>:")
+        bot.register_next_step_handler(msg, admin_process_new_balance, target_id)
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid ID format. Please click 'Edit User Balance' again.")
 
+def admin_process_new_balance(message, target_id):
+    if message.chat.id != ADMIN_ID: return
+    try:
+        new_bal = int(message.text.strip())
+        update_user(target_id, main_balance=new_bal)
+        bot.reply_to(message, f"✅ Successfully updated user <code>{target_id}</code> balance to <b>₹{new_bal}</b>.")
+        bot.send_message(target_id, f"🔔 <b>Admin Update:</b> Your main balance has been adjusted to <b>₹{new_bal}</b>.")
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid amount. Action cancelled.")
+
+# --- APPROVE/REJECT HANDLER ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("tx_"))
+def handle_transactions(call):
+    parts = call.data.split("_")
+    action = parts[1] # 'app' (approve) or 'rej' (reject)
+    tx_type = parts[2] # 'dep' or 'wit'
+    tx_id = int(parts[3])
+    user_id = int(parts[4])
+    amount = int(parts[5])
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Safety Check: Prevent double-clicking
+    c.execute("SELECT status FROM transactions WHERE id = %s", (tx_id,))
+    status = c.fetchone()
+    if not status or status[0] != 'PENDING':
+        bot.answer_callback_query(call.id, "❌ Transaction already processed!", show_alert=True)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        conn.close()
+        return
+
+    user = get_user(user_id)
+    if not user:
+        bot.answer_callback_query(call.id, "❌ User not found.")
+        conn.close()
+        return
+
+    # Process Deposits
+    if tx_type == "dep":
+        if action == "app":
+            update_user(user_id, main_balance=user['main_balance'] + amount)
+            c.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = %s", (tx_id,))
+            bot.edit_message_text(f"✅ Approved Deposit of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
+            bot.send_message(user_id, f"🎉 <b>DEPOSIT APPROVED!</b>\n₹{amount} has been added to your Main Wallet.")
+        elif action == "rej":
+            c.execute("UPDATE transactions SET status = 'REJECTED' WHERE id = %s", (tx_id,))
+            bot.edit_message_text(f"❌ Rejected Deposit of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
+            bot.send_message(user_id, f"❌ <b>Deposit of ₹{amount} was declined.</b> Please contact support if you believe this is an error.")
+
+    # Process Withdrawals
+    elif tx_type == "wit":
+        if action == "app":
+            c.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = %s", (tx_id,))
+            bot.edit_message_text(f"✅ Approved Withdrawal of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
+            bot.send_message(user_id, f"💸 <b>WITHDRAWAL PROCESSED!</b>\nYour withdrawal of ₹{amount} has been successfully sent out.")
+        elif action == "rej":
+            # Auto-Refund the user!
+            update_user(user_id, main_balance=user['main_balance'] + amount)
+            c.execute("UPDATE transactions SET status = 'REJECTED' WHERE id = %s", (tx_id,))
+            bot.edit_message_text(f"❌ Rejected Withdrawal of ₹{amount} for <code>{user_id}</code>. Funds auto-refunded.", call.message.chat.id, call.message.message_id)
+            bot.send_message(user_id, f"❌ <b>Withdrawal of ₹{amount} was rejected.</b>\nThe funds have been safely returned to your Main Balance.")
+
+    conn.commit()
+    conn.close()
 # ==========================================
 # MAIN BOT LOGIC
 # ==========================================
