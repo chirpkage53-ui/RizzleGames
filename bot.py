@@ -108,10 +108,12 @@ def handle_background_sync():
 # TELEGRAM UI HELPER
 # ==========================================
 def get_main_menu(chat_id):
-    """Builds the dynamic keyboard injecting live balances into the URL."""
+    """Builds the dynamic keyboard injecting live balances AND chat_id into the URL."""
     user = get_user(chat_id)
     base_url = "https://adorable-llama-015fe9.netlify.app"
-    dynamic_url = f"{base_url}/?main={user['main_balance']}&bonus={user['bonus_balance']}&wager={user['wager_remaining']}"
+    
+    # Notice we added chat_id= to the link!
+    dynamic_url = f"{base_url}/?chat_id={chat_id}&main={user['main_balance']}&bonus={user['bonus_balance']}&wager={user['wager_remaining']}"
     
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("🎮 Play Game", web_app=WebAppInfo(url=dynamic_url)))
