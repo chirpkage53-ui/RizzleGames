@@ -261,6 +261,31 @@ def handle_transactions(call):
 
     conn.commit()
     conn.close()
+
+# --- PAYMENT METHOD HANDLERS (INLINE BUTTONS) ---
+@bot.callback_query_handler(func=lambda call: call.data in ["edit_upi", "edit_bank"])
+def edit_payment_methods(call):
+    chat_id = call.message.chat.id
+    if call.data == "edit_upi":
+        update_user(chat_id, state='AWAITING_UPI')
+        bot.edit_message_text(
+            "🔗 <b>LINK YOUR UPI ID</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Please reply to this message with your exact UPI ID.\n\n"
+            "<i>Example: <code>username@okicici</code></i>", 
+            chat_id, call.message.message_id
+        )
+    elif call.data == "edit_bank":
+        update_user(chat_id, state='AWAITING_BANK')
+        bot.edit_message_text(
+            "🏦 <b>LINK BANK ACCOUNT</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Please reply with your full bank details in a single message:\n\n"
+            "<i>Format: Account Number, IFSC Code, Account Holder Name</i>\n"
+            "<i>Example: <code>123456789, SBIN000123, John Doe</code></i>", 
+            chat_id, call.message.message_id
+        )
+
 # ==========================================
 # MAIN BOT LOGIC
 # ==========================================
@@ -290,6 +315,13 @@ def handle_text(message):
     user = get_user(chat_id)
     if not user: return
 
+    # Clear state if the user clicks a standard menu button instead of responding
+    menu_items = ["🎮 Play Game", "💰 Balance", "📜 History", "📥 Deposit", "📤 Withdrawal", "👤 Profile", "🏦 UPI / Banks"]
+    if text in menu_items:
+        update_user(chat_id, state=None)
+        user['state'] = None # Update local variable so the rest of the flow works correctly
+
+    # Handle Captcha Validation First
     if user['state'] == 'AWAITING_CAPTCHA':
         if text.strip() == TEMP_CAPTCHAS.get(chat_id):
             update_user(chat_id, verified=1, bonus_balance=100, wager_remaining=(100 * WAGER_MULTIPLIER), state=None)
@@ -299,10 +331,7 @@ def handle_text(message):
             bot.reply_to(message, "❌ Wrong! Try again.")
         return
 
-    menu_items = ["🎮 Play Game", "💰 Balance", "📜 History", "📥 Deposit", "📤 Withdrawal", "👤 Profile", "🏦 UPI / Banks"]
-    if text in menu_items:
-        update_user(chat_id, state=None)
-
+    # Menu Commands
     if text == "💰 Balance":
         bot.reply_to(message, f"💰 <b>Main:</b> ₹{user['main_balance']} | 🎁 <b>Bonus:</b> ₹{user['bonus_balance']}\n🔄 <b>Wager Left:</b> ₹{user['wager_remaining']}")
         bot.send_message(chat_id, "Menu refreshed.", reply_markup=get_main_menu(chat_id))
@@ -325,10 +354,43 @@ def handle_text(message):
 
     elif text == "📤 Withdrawal":
         if not user['bank_details'] and not user['upi_id']:
-            bot.reply_to(message, "❌ Link a Bank or UPI first from the menu!")
+            bot.reply_to(message, "❌ <b>No Payout Method Found!</b>\nPlease link a Bank or UPI first from the '🏦 UPI / Banks' menu.")
             return
         update_user(chat_id, state='AWAITING_WITHDRAW_AMT')
         bot.reply_to(message, f"📤 Available to withdraw: <b>₹{user['main_balance']}</b>\nEnter amount:")
+
+    elif text == "🏦 UPI / Banks":
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("🔗 Link/Edit UPI", callback_data="edit_upi"))
+        markup.row(InlineKeyboardButton("🏦 Link/Edit Bank", callback_data="edit_bank"))
+        
+        upi = f"<code>{user['upi_id']}</code>" if user['upi_id'] else "<i>Not Linked ❌</i>"
+        bank_info = "<i>Not Linked ❌</i>"
+        if user['bank_details']:
+            # Try to grab the detailed info string, otherwise just show Linked
+            bank_info = f"<code>{user['bank_details'].get('info', 'Linked ✅')}</code>"
+
+        msg = (
+            "🏦 <b>WITHDRAWAL METHODS</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🔸 <b>UPI ID:</b> {upi}\n"
+            f"🔸 <b>Bank:</b> {bank_info}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "<i>Select an option below to securely update your payout methods.</i>"
+        )
+        bot.reply_to(message, msg, reply_markup=markup)
+
+    # Input States
+    elif user['state'] == 'AWAITING_UPI':
+        if "@" not in text:
+            bot.reply_to(message, "❌ <b>Invalid Format!</b>\nA valid UPI must contain an '@' symbol. Please try typing it again:")
+            return
+        update_user(chat_id, upi_id=text.strip(), state=None)
+        bot.reply_to(message, f"✅ <b>UPI Successfully Linked!</b>\nAll future withdrawals will be routed to: <code>{text.strip()}</code>")
+
+    elif user['state'] == 'AWAITING_BANK':
+        update_user(chat_id, bank_details={"info": text.strip()}, state=None)
+        bot.reply_to(message, f"✅ <b>Bank Details Secured!</b>\nInformation saved: <code>{text.strip()}</code>")
 
     elif user['state'] == 'AWAITING_DEPOSIT_AMT':
         if not text.isdigit() or int(text) < 100:
