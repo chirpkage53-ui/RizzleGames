@@ -104,6 +104,24 @@ def handle_background_sync():
     
     return jsonify({"status": "success"}), 200
 
+@app.route('/get_balance', methods=['POST'])
+def serve_live_balance():
+    """Securely sends the exact database balance to the Web App on load."""
+    data = request.json
+    chat_id = data.get('chat_id')
+    if not chat_id: return jsonify({"status": "error"}), 400
+
+    user = get_user(chat_id)
+    if user:
+        return jsonify({
+            "status": "success",
+            "main": user['main_balance'],
+            "bonus": user['bonus_balance'],
+            "wager": user['wager_remaining']
+        }), 200
+    else:
+        return jsonify({"status": "error"}), 404
+
 # ==========================================
 # TELEGRAM UI HELPER
 # ==========================================
