@@ -1,0 +1,4 @@
+pyTelegramBotAPI
+flask
+flask-cors
+python-dotenv
