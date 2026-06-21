@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
+from datetime import datetime
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -72,6 +73,15 @@ def update_user(chat_id, **kwargs):
     conn.commit()
     conn.close()
 
+def get_total_deposits(chat_id):
+    """Calculates the total completed deposits for a user."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT SUM(amount) FROM transactions WHERE chat_id = %s AND type = 'DEPOSIT' AND status = 'COMPLETED'", (chat_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    return total if total else 0
+
 init_db()
 print("✅ PostgreSQL Database locked and loaded!")
 
@@ -125,23 +135,23 @@ def get_main_menu(chat_id):
     
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("🎮 Play Game", web_app=WebAppInfo(url=dynamic_url)))
-    markup.row(KeyboardButton("💰 Balance"), KeyboardButton("📜 History"))
-    markup.row(KeyboardButton("📥 Deposit"), KeyboardButton("📤 Withdrawal"))
+    markup.row(KeyboardButton("💳 Balance"), KeyboardButton("📊 History"))
+    markup.row(KeyboardButton("⚡ Deposit"), KeyboardButton("🏛️ Withdrawal"))
     markup.row(KeyboardButton("👤 Profile"), KeyboardButton("🏦 UPI / Banks"))
     return markup
 
 # ==========================================
-# SUPER ADMIN PANEL LOGIC
+# ADMIN PANEL LOGIC
 # ==========================================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.chat.id != ADMIN_ID: return
     markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("📥 Pending Deposits", callback_data="admin_deposits"))
-    markup.row(InlineKeyboardButton("📤 Pending Withdrawals", callback_data="admin_withdrawals"))
+    markup.row(InlineKeyboardButton("⚡ Pending Deposits", callback_data="admin_deposits"))
+    markup.row(InlineKeyboardButton("🏛️ Pending Withdrawals", callback_data="admin_withdrawals"))
     markup.row(InlineKeyboardButton("👥 View All Users", callback_data="admin_users"))
-    markup.row(InlineKeyboardButton("💰 Edit User Balance", callback_data="admin_edit_bal"))
-    bot.reply_to(message, "👑 <b>SUPER ADMIN PANEL</b>", reply_markup=markup)
+    markup.row(InlineKeyboardButton("💳 Edit User Balance", callback_data="admin_edit_bal"))
+    bot.reply_to(message, "⚙️ <b>RIZZLE GAMES | SYSTEM ADMIN</b>", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_actions(call):
@@ -151,7 +161,7 @@ def admin_actions(call):
     if call.data == "admin_users":
         c.execute("SELECT chat_id, main_balance, bonus_balance FROM users")
         users = c.fetchall()
-        msg = "📈 <b>User Balances:</b>\n" + "\n".join([f"ID: <code>{u[0]}</code> | Main: ₹{u[1]} | Bonus: ₹{u[2]}" for u in users])
+        msg = "📊 <b>USER DIRECTORY</b>\n" + "\n".join([f"ID: <code>{u[0]}</code> | Main: ₹{u[1]} | Bonus: ₹{u[2]}" for u in users])
         bot.send_message(call.message.chat.id, msg[:4000])
     
     elif call.data == "admin_deposits":
@@ -166,7 +176,7 @@ def admin_actions(call):
                     InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_dep_{p[0]}_{p[1]}_{p[2]}"),
                     InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_dep_{p[0]}_{p[1]}_{p[2]}")
                 )
-                bot.send_message(call.message.chat.id, f"📥 <b>Deposit Request:</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+                bot.send_message(call.message.chat.id, f"⚡ <b>DEPOSIT REVIEW</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
 
     elif call.data == "admin_withdrawals":
         c.execute("SELECT id, chat_id, amount FROM transactions WHERE type = 'WITHDRAWAL' AND status = 'PENDING'")
@@ -180,10 +190,10 @@ def admin_actions(call):
                     InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_wit_{p[0]}_{p[1]}_{p[2]}"),
                     InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_wit_{p[0]}_{p[1]}_{p[2]}")
                 )
-                bot.send_message(call.message.chat.id, f"📤 <b>Withdrawal Request:</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+                bot.send_message(call.message.chat.id, f"🏛️ <b>WITHDRAWAL REVIEW</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
 
     elif call.data == "admin_edit_bal":
-        msg = bot.send_message(call.message.chat.id, "✏️ <b>Enter the User's Chat ID to edit:</b>")
+        msg = bot.send_message(call.message.chat.id, "✏️ <b>Enter the User's Chat ID:</b>")
         bot.register_next_step_handler(msg, admin_process_edit_id)
         
     conn.close()
@@ -194,22 +204,22 @@ def admin_process_edit_id(message):
         target_id = int(message.text.strip())
         user = get_user(target_id)
         if not user:
-            bot.reply_to(message, "❌ User not found in database.")
+            bot.reply_to(message, "❌ User not found.")
             return
-        msg = bot.reply_to(message, f"👤 User: <code>{target_id}</code>\n💰 Current Main Balance: <b>₹{user['main_balance']}</b>\n\n✏️ Enter the <b>NEW Main Balance</b>:")
+        msg = bot.reply_to(message, f"👤 User: <code>{target_id}</code>\n💳 Current Balance: <b>₹{user['main_balance']}</b>\n\n✏️ Enter the <b>NEW Main Balance</b>:")
         bot.register_next_step_handler(msg, admin_process_new_balance, target_id)
     except ValueError:
-        bot.reply_to(message, "❌ Invalid ID format. Please click 'Edit User Balance' again.")
+        bot.reply_to(message, "❌ Invalid ID format.")
 
 def admin_process_new_balance(message, target_id):
     if message.chat.id != ADMIN_ID: return
     try:
         new_bal = int(message.text.strip())
         update_user(target_id, main_balance=new_bal)
-        bot.reply_to(message, f"✅ Successfully updated user <code>{target_id}</code> balance to <b>₹{new_bal}</b>.")
-        bot.send_message(target_id, f"🔔 <b>Admin Update:</b> Your main balance has been adjusted to <b>₹{new_bal}</b>.")
+        bot.reply_to(message, f"✅ Successfully updated user <code>{target_id}</code> to <b>₹{new_bal}</b>.")
+        bot.send_message(target_id, f"🔔 <b>SYSTEM UPDATE</b>\nYour main balance has been adjusted to <code>₹{new_bal}</code>.")
     except ValueError:
-        bot.reply_to(message, "❌ Invalid amount. Action cancelled.")
+        bot.reply_to(message, "❌ Invalid amount.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("tx_"))
 def handle_transactions(call):
@@ -238,37 +248,35 @@ def handle_transactions(call):
             c.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = %s", (tx_id,))
             bot.edit_message_text(f"✅ Approved Deposit of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
             
-            # Premium Deposit Success Message
             bot.send_message(user_id, (
-                "<b>✅ DEPOSIT SUCCESSFUL</b>\n"
+                "<b>🟢 DEPOSIT CONFIRMED</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                f"💳 <b>Amount Added:</b> <code>₹{amount}</code>\n\n"
-                "<i>Your Main Wallet has been topped up. Good luck at the tables! 🎲</i>"
+                f"💳 <b>Credited:</b> <code>₹{amount}</code>\n\n"
+                "<i>Your funds are now available. Best of luck at Rizzle Games!</i>"
             ))
             
         elif action == "rej":
             c.execute("UPDATE transactions SET status = 'REJECTED' WHERE id = %s", (tx_id,))
             bot.edit_message_text(f"❌ Rejected Deposit of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
-            bot.send_message(user_id, f"❌ <b>Deposit of <code>₹{amount}</code> was declined.</b>\nPlease contact support if you believe this is an error.")
+            bot.send_message(user_id, f"🔴 <b>DEPOSIT DECLINED</b>\nYour transaction of <code>₹{amount}</code> could not be verified. Please contact support.")
 
     elif tx_type == "wit":
         if action == "app":
             c.execute("UPDATE transactions SET status = 'COMPLETED' WHERE id = %s", (tx_id,))
             bot.edit_message_text(f"✅ Approved Withdrawal of ₹{amount} for <code>{user_id}</code>", call.message.chat.id, call.message.message_id)
             
-            # Premium Withdrawal Success Message
             bot.send_message(user_id, (
-                "<b>💸 WITHDRAWAL PROCESSED</b>\n"
+                "<b>🟢 WITHDRAWAL PROCESSED</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                f"💳 <b>Amount Sent:</b> <code>₹{amount}</code>\n\n"
-                "<i>Your winnings have been transferred to your linked payout method! 🎉</i>"
+                f"🏛️ <b>Amount Sent:</b> <code>₹{amount}</code>\n\n"
+                "<i>Your funds have been dispatched to your linked payout method.</i>"
             ))
             
         elif action == "rej":
             update_user(user_id, main_balance=user['main_balance'] + amount)
             c.execute("UPDATE transactions SET status = 'REJECTED' WHERE id = %s", (tx_id,))
             bot.edit_message_text(f"❌ Rejected Withdrawal of ₹{amount} for <code>{user_id}</code>. Funds auto-refunded.", call.message.chat.id, call.message.message_id)
-            bot.send_message(user_id, f"❌ <b>Withdrawal of <code>₹{amount}</code> was rejected.</b>\nThe funds have been safely returned to your Main Balance.")
+            bot.send_message(user_id, f"🔴 <b>WITHDRAWAL DECLINED</b>\nYour withdrawal of <code>₹{amount}</code> was rejected. Funds have been safely returned to your wallet.")
 
     conn.commit()
     conn.close()
@@ -279,25 +287,24 @@ def edit_payment_methods(call):
     if call.data == "edit_upi":
         update_user(chat_id, state='AWAITING_UPI')
         bot.edit_message_text(
-            "<b>🔗 LINK YOUR UPI ID</b>\n"
+            "<b>🔗 BIND UPI ADDRESS</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Please reply to this message with your exact UPI ID.\n\n"
-            "<i>Example: <code>username@okicici</code></i>", 
+            "Reply to this message with your precise UPI ID.\n\n"
+            "<i>Format:</i> <code>username@okicici</code>", 
             chat_id, call.message.message_id
         )
     elif call.data == "edit_bank":
         update_user(chat_id, state='AWAITING_BANK')
         bot.edit_message_text(
-            "<b>🏦 LINK BANK ACCOUNT</b>\n"
+            "<b>🏦 BIND BANK ACCOUNT</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Please reply with your full bank details in a single message:\n\n"
-            "<i>Format: Account Number, IFSC Code, Account Holder Name</i>\n"
-            "<i>Example: <code>123456789, SBIN000123, John Doe</code></i>", 
+            "Reply with your bank details in a single message.\n\n"
+            "<i>Format:</i> <code>Account Number, IFSC Code, Holder Name</code>", 
             chat_id, call.message.message_id
         )
 
 # ==========================================
-# MAIN BOT LOGIC & PREMIUM UI TEXTS
+# MAIN BOT LOGIC & RIZZLE GAMES TEXTS
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -312,21 +319,21 @@ def start(message):
     user = get_user(chat_id)
     if user['verified']:
         bot.send_message(chat_id, (
-            "<b>🎰 PREMIUM CASINO LOBBY</b>\n"
+            "<b>🎮 RIZZLE GAMES LOBBY</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Welcome back, VIP! Your table is ready.\n\n"
-            "<i>Tap '🎮 Play Game' below to launch the Web App.</i>"
+            "Welcome back. Your session is active.\n\n"
+            "<i>Select '🎮 Play Game' to enter the casino floor.</i>"
         ), reply_markup=get_main_menu(chat_id))
     else:
         num1, num2 = random.randint(1, 10), random.randint(1, 10)
         TEMP_CAPTCHAS[chat_id] = str(num1 + num2)
         update_user(chat_id, state='AWAITING_CAPTCHA')
         bot.send_message(chat_id, (
-            "<b>🛡️ SECURITY VERIFICATION</b>\n"
+            "<b>🛡️ SECURITY PROTOCOL</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "To access the casino, please solve this quick math problem to prove you are human:\n\n"
-            f"👉 <b>{num1} + {num2} = ?</b>\n\n"
-            "<i>Reply to this message with the correct number.</i>"
+            "To access Rizzle Games, please verify your session:\n\n"
+            f"👉 <code>{num1} + {num2} = ?</code>\n\n"
+            "<i>Reply directly with the correct numerical answer.</i>"
         ))
 
 @bot.message_handler(func=lambda message: True)
@@ -336,7 +343,7 @@ def handle_text(message):
     user = get_user(chat_id)
     if not user: return
 
-    menu_items = ["🎮 Play Game", "💰 Balance", "📜 History", "📥 Deposit", "📤 Withdrawal", "👤 Profile", "🏦 UPI / Banks"]
+    menu_items = ["🎮 Play Game", "💳 Balance", "📊 History", "⚡ Deposit", "🏛️ Withdrawal", "👤 Profile", "🏦 UPI / Banks"]
     if text in menu_items:
         update_user(chat_id, state=None)
         user['state'] = None 
@@ -346,125 +353,152 @@ def handle_text(message):
         if text.strip() == TEMP_CAPTCHAS.get(chat_id):
             update_user(chat_id, verified=1, bonus_balance=100, wager_remaining=(100 * WAGER_MULTIPLIER), state=None)
             bot.send_message(chat_id, (
-                "<b>✅ VERIFICATION SUCCESSFUL</b>\n"
+                "<b>🟢 VERIFICATION COMPLETE</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                "Welcome to the Premium Casino! 🎰\n\n"
-                "🎁 <b>₹100 Bonus Cash</b> has been credited to your account.\n\n"
-                "<i>Tap '🎮 Play Game' to enter the lobby!</i>"
+                "Authorization granted. Welcome to Rizzle Games.\n\n"
+                "🎁 <b>Sign-Up Bonus:</b> <code>₹100</code>\n\n"
+                "<i>Select '🎮 Play Game' to deploy the Web App.</i>"
             ), reply_markup=get_main_menu(chat_id))
         else:
-            bot.reply_to(message, "❌ <b>Incorrect!</b> Please try again.")
+            bot.reply_to(message, "🔴 <b>ERROR:</b> Verification failed. Try again.")
         return
 
     # Menu Commands
-    if text == "💰 Balance":
-        wager_str = f"<code>₹{user['wager_remaining']}</code>" if user['wager_remaining'] > 0 else "<b>Complete ✅</b>"
+    if text == "💳 Balance":
+        wager_str = f"<code>₹{user['wager_remaining']}</code>" if user['wager_remaining'] > 0 else "<code>WAGER COMPLETE</code>"
         bot.reply_to(message, (
-            "<b>💎 WALLET BALANCE</b>\n"
+            "<b>💳 PORTFOLIO BALANCE</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"💳 <b>Main Cash:</b>  <code>₹{user['main_balance']}</code>\n"
-            f"🎁 <b>Bonus Cash:</b> <code>₹{user['bonus_balance']}</code>\n\n"
-            f"🔄 <b>Wager Left:</b> {wager_str}\n"
+            f"💵 <b>Main Wallet:</b>  <code>₹{user['main_balance']}</code>\n"
+            f"🎁 <b>Bonus Funds:</b> <code>₹{user['bonus_balance']}</code>\n\n"
+            f"🔄 <b>Wager Target:</b> {wager_str}\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "<i>Data is synced live with the secure server.</i>"
+            "<i>Data synchronized securely.</i>"
         ))
-        bot.send_message(chat_id, "<i>Menu refreshed.</i>", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, "<i>System refreshed.</i>", reply_markup=get_main_menu(chat_id))
     
-    elif text == "📜 History":
+    elif text == "📊 History":
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT type, amount, status FROM transactions WHERE chat_id = %s ORDER BY id DESC LIMIT 6", (chat_id,))
+        c.execute("SELECT id, type, amount, status, timestamp FROM transactions WHERE chat_id = %s ORDER BY id DESC LIMIT 5", (chat_id,))
         hist = c.fetchall()
         conn.close()
         
         hist_lines = []
         for h in hist:
-            icon = "🟢" if h[0] == 'DEPOSIT' else "🔴"
-            status = "✅" if h[2] == 'COMPLETED' else ("⏳" if h[2] == 'PENDING' else "❌")
-            hist_lines.append(f"{icon} <b>{h[0]}</b>: <code>₹{h[1]}</code> {status}")
+            # h: (id, type, amount, status, timestamp)
+            icon = "🟢" if h[1] == 'DEPOSIT' else "🔴"
+            status_map = {'COMPLETED': 'SUCCESS', 'PENDING': 'PROCESSING', 'REJECTED': 'FAILED'}
+            status_text = status_map.get(h[3], h[3])
+            date_str = h[4].strftime('%d-%b-%Y %H:%M') if h[4] else "N/A"
             
-        hist_text = "\n\n".join(hist_lines) if hist else "<i>No recent transactions.</i>"
+            block = (
+                f"{icon} <b>{h[1]}</b> | <code>#{h[0]}</code>\n"
+                f"├ <b>Date:</b> <code>{date_str}</code>\n"
+                f"├ <b>Amt:</b>  <code>₹{h[2]}</code>\n"
+                f"└ <b>Stat:</b> <code>{status_text}</code>"
+            )
+            hist_lines.append(block)
+            
+        hist_text = "\n\n".join(hist_lines) if hist else "<i>No transactional data found.</i>"
         
         bot.reply_to(message, (
-            "<b>📜 TRANSACTION HISTORY</b>\n"
+            "<b>📊 DETAILED LEDGER</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"{hist_text}\n"
             "━━━━━━━━━━━━━━━━━━"
         ))
         
     elif text == "👤 Profile":
-        bank_status = "Linked ✅" if user['bank_details'] else "Not Linked ❌"
-        upi_status = f"<code>{user['upi_id']}</code>" if user['upi_id'] else "Not Linked ❌"
+        bank_status = "<code>BOUND ✅</code>" if user['bank_details'] else "<code>UNBOUND ❌</code>"
+        upi_status = f"<code>{user['upi_id']}</code>" if user['upi_id'] else "<code>UNBOUND ❌</code>"
+        
+        total_dep = get_total_deposits(chat_id)
+        
         bot.reply_to(message, (
-            "<b>👤 PLAYER PROFILE</b>\n"
+            "<b>👤 ACCOUNT METRICS</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 <b>Account ID:</b> <code>{chat_id}</code>\n"
-            f"🛡️ <b>Status:</b> Verified VIP ✅\n\n"
-            f"<b>💳 PAYOUT METHODS</b>\n"
-            f"🔸 <b>UPI:</b> {upi_status}\n"
+            f"🆔 <b>Rizzle ID:</b> <code>{chat_id}</code>\n"
+            f"📈 <b>Total Deposits:</b> <code>₹{total_dep}</code>\n\n"
+            f"<b>🏦 WITHDRAWAL BINDINGS</b>\n"
+            f"🔸 <b>UPI:</b>  {upi_status}\n"
             f"🔸 <b>Bank:</b> {bank_status}\n"
             "━━━━━━━━━━━━━━━━━━"
         ))
         
-    elif text == "📥 Deposit":
+    elif text == "⚡ Deposit":
         update_user(chat_id, state='AWAITING_DEPOSIT_AMT')
         bot.reply_to(message, (
-            "<b>📥 INITIATE DEPOSIT</b>\n"
+            "<b>⚡ INITIATE DEPOSIT</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Reply to this message with the amount you wish to deposit.\n\n"
-            "⚠️ <i>Minimum Deposit: <code>₹100</code></i>"
+            "Input the desired deposit volume.\n\n"
+            "⚠️ <i>Minimum Volume:</i> <code>₹100</code>"
         ))
 
-    elif text == "📤 Withdrawal":
-        if not user['bank_details'] and not user['upi_id']:
+    elif text == "🏛️ Withdrawal":
+        # --- NEW RIZZLE GAMES RULE: 200RS MINIMUM DEPOSIT TO UNLOCK ---
+        total_dep = get_total_deposits(chat_id)
+        if total_dep < 200:
             bot.reply_to(message, (
-                "❌ <b>No Payout Method Found!</b>\n"
-                "Please securely link a Bank or UPI first from the '🏦 UPI / Banks' menu."
+                "<b>🔒 WITHDRAWAL LOCKED</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "Rizzle Games requires a minimum total deposit of <code>₹200</code> to unlock network withdrawals.\n\n"
+                f"📊 <b>Your Total Deposits:</b> <code>₹{total_dep}</code>\n"
+                f"🎯 <b>Required:</b> <code>₹200</code>\n\n"
+                "<i>Please use the '⚡ Deposit' menu to unlock your account.</i>"
             ))
             return
+
+        if not user['bank_details'] and not user['upi_id']:
+            bot.reply_to(message, (
+                "🔴 <b>ROUTING ERROR</b>\n"
+                "No payout destination found. Bind a UPI or Bank Account via the '🏦 UPI / Banks' menu."
+            ))
+            return
+            
         update_user(chat_id, state='AWAITING_WITHDRAW_AMT')
         bot.reply_to(message, (
-            "<b>📤 INITIATE WITHDRAWAL</b>\n"
+            "<b>🏛️ INITIATE WITHDRAWAL</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"💵 <b>Available to Withdraw:</b> <code>₹{user['main_balance']}</code>\n\n"
-            "Reply to this message with the amount you wish to withdraw.\n"
-            "⚠️ <i>Minimum Withdrawal: <code>₹100</code></i>"
+            f"💵 <b>Liquid Balance:</b> <code>₹{user['main_balance']}</code>\n\n"
+            "Input the withdrawal volume.\n"
+            "⚠️ <i>Minimum Volume:</i> <code>₹100</code>"
         ))
 
     elif text == "🏦 UPI / Banks":
         markup = InlineKeyboardMarkup()
-        markup.row(InlineKeyboardButton("🔗 Link/Edit UPI", callback_data="edit_upi"))
-        markup.row(InlineKeyboardButton("🏦 Link/Edit Bank", callback_data="edit_bank"))
+        markup.row(InlineKeyboardButton("🔗 Bind UPI", callback_data="edit_upi"))
+        markup.row(InlineKeyboardButton("🏦 Bind Bank", callback_data="edit_bank"))
         
-        upi = f"<code>{user['upi_id']}</code>" if user['upi_id'] else "<i>Not Linked ❌</i>"
-        bank_info = "<i>Not Linked ❌</i>"
+        upi = f"<code>{user['upi_id']}</code>" if user['upi_id'] else "<code>UNBOUND ❌</code>"
+        bank_info = "<code>UNBOUND ❌</code>"
         if user['bank_details']:
-            bank_info = f"<code>{user['bank_details'].get('info', 'Linked ✅')}</code>"
+            bank_info = f"<code>{user['bank_details'].get('info', 'BOUND ✅')}</code>"
 
         bot.reply_to(message, (
-            "<b>🏦 WITHDRAWAL METHODS</b>\n"
+            "<b>🏦 DESTINATION BINDING</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"🔸 <b>UPI ID:</b> {upi}\n"
+            f"🔸 <b>UPI:</b>  {upi}\n"
             f"🔸 <b>Bank:</b> {bank_info}\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "<i>Select an option below to securely update your payout methods.</i>"
+            "<i>Select a parameter below to securely map your payout destination.</i>"
         ), reply_markup=markup)
 
     # --- INPUT STATES ---
     elif user['state'] == 'AWAITING_UPI':
         if "@" not in text:
-            bot.reply_to(message, "❌ <b>Invalid Format!</b>\nA valid UPI must contain an '@' symbol. Please try again:")
+            bot.reply_to(message, "🔴 <b>SYNTAX ERROR:</b> Missing '@' parameter. Re-enter your UPI:")
             return
         update_user(chat_id, upi_id=text.strip(), state=None)
-        bot.reply_to(message, f"✅ <b>UPI Successfully Linked!</b>\nAll future withdrawals will be routed to: <code>{text.strip()}</code>")
+        bot.reply_to(message, f"🟢 <b>UPI BOUND SUCCESSFULLY</b>\nTarget: <code>{text.strip()}</code>")
 
     elif user['state'] == 'AWAITING_BANK':
         update_user(chat_id, bank_details={"info": text.strip()}, state=None)
-        bot.reply_to(message, f"✅ <b>Bank Details Secured!</b>\nInformation saved: <code>{text.strip()}</code>")
+        bot.reply_to(message, f"🟢 <b>BANK BOUND SUCCESSFULLY</b>\nTarget: <code>{text.strip()}</code>")
 
     elif user['state'] == 'AWAITING_DEPOSIT_AMT':
         if not text.isdigit() or int(text) < 100:
-            bot.reply_to(message, "❌ <b>Error:</b> Minimum deposit is <code>₹100</code>.")
+            bot.reply_to(message, "🔴 <b>ERROR:</b> Volume must be <code>≥ ₹100</code>.")
             return
         amt = int(text)
         update_user(chat_id, state=None)
@@ -476,21 +510,22 @@ def handle_text(message):
         conn.close()
         
         bot.reply_to(message, (
-            "<b>⏳ DEPOSIT PENDING</b>\n"
+            "<b>⏳ DEPOSIT PROCESSING</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"🔹 <b>Amount:</b> <code>₹{amt}</code>\n\n"
-            "<b>Please send the exact amount to:</b>\n"
+            f"🔹 <b>Volume:</b> <code>₹{amt}</code>\n\n"
+            "<b>Action Required:</b>\n"
+            "Transfer exact volume to network node:\n"
             "👉 <code>your-upi@bank</code>\n\n"
-            "<i>Your balance will be updated instantly once approved by our team.</i>"
+            "<i>Funds will automatically reflect post-verification.</i>"
         ))
 
     elif user['state'] == 'AWAITING_WITHDRAW_AMT':
         if not text.isdigit() or int(text) < 100:
-            bot.reply_to(message, "❌ <b>Error:</b> Minimum withdrawal is <code>₹100</code>.")
+            bot.reply_to(message, "🔴 <b>ERROR:</b> Volume must be <code>≥ ₹100</code>.")
             return
         amt = int(text)
         if amt > user['main_balance']:
-            bot.reply_to(message, f"❌ <b>Error:</b> Insufficient Main Balance (Available: <code>₹{user['main_balance']}</code>).")
+            bot.reply_to(message, f"🔴 <b>ERROR:</b> Insufficient Liquidity (Available: <code>₹{user['main_balance']}</code>).")
             return
         
         update_user(chat_id, main_balance=user['main_balance'] - amt, state=None)
@@ -501,11 +536,11 @@ def handle_text(message):
         conn.close()
         
         bot.reply_to(message, (
-            "<b>⏳ WITHDRAWAL REQUESTED</b>\n"
+            "<b>⏳ WITHDRAWAL QUEUED</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"🔹 <b>Amount:</b> <code>₹{amt}</code>\n"
-            "🔹 <b>Status:</b> Processing ⏳\n\n"
-            "<i>Your request has been forwarded to the payout team and will be credited to your linked method soon.</i>"
+            f"🔹 <b>Volume:</b> <code>₹{amt}</code>\n"
+            "🔹 <b>State:</b> <code>PROCESSING</code>\n\n"
+            "<i>Assets are being routed to your bound destination.</i>"
         ))
 
 # ==========================================
@@ -517,5 +552,5 @@ def run_flask():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    print("✅ Premium Bot is online and polling...")
+    print("✅ Rizzle Games Server is online and polling...")
     bot.infinity_polling()
