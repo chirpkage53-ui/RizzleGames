@@ -27,7 +27,7 @@ CORS(app)
 ADMIN_ID = 5339772189 # Your Admin ID is set
 
 # 👇👇 REPLACE THIS WITH YOUR REAL PAYMENT UPI ID 👇👇
-ADMIN_UPI = "your-upi@bank" 
+ADMIN_UPI = "kmnnnnll@oksbi" 
 
 # ==========================================
 # DATABASE LOGIC (POSTGRESQL)
