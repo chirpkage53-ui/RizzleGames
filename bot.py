@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -424,7 +424,13 @@ def handle_text(message):
             icon = "🟢" if h[1] == 'DEPOSIT' else "🔴"
             status_map = {'COMPLETED': 'SUCCESS', 'PENDING': 'PROCESSING', 'REJECTED': 'FAILED'}
             status_text = status_map.get(h[3], h[3])
-            date_str = h[4].strftime('%d-%b-%Y %H:%M') if h[4] else "N/A"
+            
+            # Convert UTC server time to Indian Standard Time (IST)
+            if h[4]:
+                ist_time = h[4] + timedelta(hours=5, minutes=30)
+                date_str = ist_time.strftime('%d-%b-%Y %I:%M %p') # e.g., 21-Jun-2026 10:41 AM
+            else:
+                date_str = "N/A"
             
             block = (
                 f"{icon} <b>{h[1]}</b> | <code>#{h[0]}</code>\n"
