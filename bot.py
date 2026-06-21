@@ -26,6 +26,9 @@ CORS(app)
 
 ADMIN_ID = 5339772189 # Your Admin ID is set
 
+# 👇👇 REPLACE THIS WITH YOUR REAL PAYMENT UPI ID 👇👇
+ADMIN_UPI = "your-upi@bank" 
+
 # ==========================================
 # DATABASE LOGIC (POSTGRESQL)
 # ==========================================
@@ -42,8 +45,14 @@ def init_db():
     
     c.execute('''CREATE TABLE IF NOT EXISTS transactions (
         id SERIAL PRIMARY KEY, chat_id BIGINT, type TEXT, 
-        amount INTEGER, status TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        amount INTEGER, status TEXT, utr TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
+    # Safely upgrade the database to include the UTR column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS utr TEXT")
+    except Exception:
+        pass
+        
     c.execute('''CREATE TABLE IF NOT EXISTS game_history (
         id SERIAL PRIMARY KEY, chat_id BIGINT, 
         wager INTEGER, won INTEGER, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
@@ -87,6 +96,7 @@ print("✅ PostgreSQL Database locked and loaded!")
 
 WAGER_MULTIPLIER = 10
 TEMP_CAPTCHAS = {}
+TEMP_DEPOSITS = {} # Temporarily holds the deposit amount between steps
 
 # ==========================================
 # WEB APP RECEIVER (FLASK API)
@@ -165,18 +175,25 @@ def admin_actions(call):
         bot.send_message(call.message.chat.id, msg[:4000])
     
     elif call.data == "admin_deposits":
-        c.execute("SELECT id, chat_id, amount FROM transactions WHERE type = 'DEPOSIT' AND status = 'PENDING'")
+        c.execute("SELECT id, chat_id, amount, utr FROM transactions WHERE type = 'DEPOSIT' AND status = 'PENDING'")
         pending = c.fetchall()
         if not pending:
             bot.send_message(call.message.chat.id, "✅ No pending deposits.")
         else:
             for p in pending:
+                tx_id, uid, amt, utr = p[0], p[1], p[2], p[3]
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_dep_{p[0]}_{p[1]}_{p[2]}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_dep_{p[0]}_{p[1]}_{p[2]}")
+                    InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_dep_{tx_id}_{uid}_{amt}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_dep_{tx_id}_{uid}_{amt}")
                 )
-                bot.send_message(call.message.chat.id, f"⚡ <b>DEPOSIT REVIEW</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+                bot.send_message(call.message.chat.id, (
+                    "⚡ <b>DEPOSIT REVIEW</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 <b>User:</b> <code>{uid}</code>\n"
+                    f"💵 <b>Amount Claimed:</b> <code>₹{amt}</code>\n"
+                    f"🧾 <b>UTR / Ref:</b> <code>{utr}</code>"
+                ), reply_markup=markup)
 
     elif call.data == "admin_withdrawals":
         c.execute("SELECT id, chat_id, amount FROM transactions WHERE type = 'WITHDRAWAL' AND status = 'PENDING'")
@@ -185,12 +202,30 @@ def admin_actions(call):
             bot.send_message(call.message.chat.id, "✅ No pending withdrawals.")
         else:
             for p in pending:
+                tx_id, uid, amt = p[0], p[1], p[2]
+                
+                # Retrieve User's Payout Details dynamically
+                u_data = get_user(uid)
+                upi = u_data['upi_id'] if u_data and u_data['upi_id'] else "UNBOUND ❌"
+                bank = "UNBOUND ❌"
+                if u_data and u_data['bank_details']:
+                    bank = u_data['bank_details'].get('info', 'BOUND ✅')
+                
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("✅ Approve", callback_data=f"tx_app_wit_{p[0]}_{p[1]}_{p[2]}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"tx_rej_wit_{p[0]}_{p[1]}_{p[2]}")
+                    InlineKeyboardButton("✅ Approve (Paid)", callback_data=f"tx_app_wit_{tx_id}_{uid}_{amt}"),
+                    InlineKeyboardButton("❌ Reject (Refund)", callback_data=f"tx_rej_wit_{tx_id}_{uid}_{amt}")
                 )
-                bot.send_message(call.message.chat.id, f"🏛️ <b>WITHDRAWAL REVIEW</b>\nUser: <code>{p[1]}</code>\nAmount: <b>₹{p[2]}</b>", reply_markup=markup)
+                
+                bot.send_message(call.message.chat.id, (
+                    "🏛️ <b>WITHDRAWAL REVIEW</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 <b>User:</b> <code>{uid}</code>\n"
+                    f"💵 <b>Amount to Pay:</b> <code>₹{amt}</code>\n\n"
+                    "<b>PAYMENT DESTINATION:</b>\n"
+                    f"🔸 <b>UPI:</b> <code>{upi}</code>\n"
+                    f"🔸 <b>Bank:</b> <code>{bank}</code>"
+                ), reply_markup=markup)
 
     elif call.data == "admin_edit_bal":
         msg = bot.send_message(call.message.chat.id, "✏️ <b>Enter the User's Chat ID:</b>")
@@ -386,7 +421,6 @@ def handle_text(message):
         
         hist_lines = []
         for h in hist:
-            # h: (id, type, amount, status, timestamp)
             icon = "🟢" if h[1] == 'DEPOSIT' else "🔴"
             status_map = {'COMPLETED': 'SUCCESS', 'PENDING': 'PROCESSING', 'REJECTED': 'FAILED'}
             status_text = status_map.get(h[3], h[3])
@@ -436,7 +470,7 @@ def handle_text(message):
         ))
 
     elif text == "🏛️ Withdrawal":
-        # --- NEW RIZZLE GAMES RULE: 200RS MINIMUM DEPOSIT TO UNLOCK ---
+        # RIZZLE GAMES RULE: 200RS MINIMUM DEPOSIT TO UNLOCK
         total_dep = get_total_deposits(chat_id)
         if total_dep < 200:
             bot.reply_to(message, (
@@ -496,27 +530,52 @@ def handle_text(message):
         update_user(chat_id, bank_details={"info": text.strip()}, state=None)
         bot.reply_to(message, f"🟢 <b>BANK BOUND SUCCESSFULLY</b>\nTarget: <code>{text.strip()}</code>")
 
+    # --- 2-STEP DEPOSIT FLOW (Amount -> UTR) ---
     elif user['state'] == 'AWAITING_DEPOSIT_AMT':
         if not text.isdigit() or int(text) < 100:
             bot.reply_to(message, "🔴 <b>ERROR:</b> Volume must be <code>≥ ₹100</code>.")
             return
+            
         amt = int(text)
+        TEMP_DEPOSITS[chat_id] = amt # Save amount temporarily
+        update_user(chat_id, state='AWAITING_UTR')
+        
+        bot.reply_to(message, (
+            "<b>💸 PAYMENT REQUIRED</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🔹 <b>Volume:</b> <code>₹{amt}</code>\n\n"
+            "<b>1. Transfer the exact amount to this UPI ID:</b>\n"
+            f"👉 <code>{ADMIN_UPI}</code>\n\n"
+            "<b>2. Reply to this message with your 12-digit UTR / Ref No:</b>\n"
+            "<i>(The Transaction ID from PhonePe/GPay/Paytm)</i>"
+        ))
+
+    elif user['state'] == 'AWAITING_UTR':
+        utr = text.strip()
+        amt = TEMP_DEPOSITS.get(chat_id)
+        
+        if not amt:
+            # Fallback if bot restarted during payment
+            update_user(chat_id, state=None)
+            bot.reply_to(message, "🔴 <b>SESSION EXPIRED:</b> Please click '⚡ Deposit' and initiate the transaction again.")
+            return
+            
         update_user(chat_id, state=None)
         
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO transactions (chat_id, type, amount, status) VALUES (%s, 'DEPOSIT', %s, 'PENDING')", (chat_id, amt))
+        c.execute("INSERT INTO transactions (chat_id, type, amount, status, utr) VALUES (%s, 'DEPOSIT', %s, 'PENDING', %s)", (chat_id, amt, utr))
         conn.commit()
         conn.close()
+        
+        del TEMP_DEPOSITS[chat_id] # Clear temp storage
         
         bot.reply_to(message, (
             "<b>⏳ DEPOSIT PROCESSING</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"🔹 <b>Volume:</b> <code>₹{amt}</code>\n\n"
-            "<b>Action Required:</b>\n"
-            "Transfer exact volume to network node:\n"
-            "👉 <code>your-upi@bank</code>\n\n"
-            "<i>Funds will automatically reflect post-verification.</i>"
+            f"🔹 <b>Volume:</b> <code>₹{amt}</code>\n"
+            f"🔹 <b>UTR:</b> <code>{utr}</code>\n\n"
+            "<i>Your transaction is under review. Funds will automatically reflect post-verification.</i>"
         ))
 
     elif user['state'] == 'AWAITING_WITHDRAW_AMT':
