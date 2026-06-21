@@ -135,6 +135,11 @@ def serve_live_balance():
     else:
         return jsonify({"status": "error"}), 404
 
+@app.route('/')
+def keep_alive():
+    """This route keeps the Render server awake 24/7."""
+    return "Rizzle Games Server is Online!", 200
+
 # ==========================================
 # TELEGRAM UI HELPER
 # ==========================================
